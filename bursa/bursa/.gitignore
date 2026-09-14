@@ -1,0 +1,26 @@
+# ---- secrets: never, under any circumstances ----
+.env
+.env.*
+credentials*
+*_secret*
+opend_config*
+config/local*
+
+# ---- account and position data ----
+*_positions.csv
+*_statement*
+trades_live*
+competition_account*
+
+# ---- bulky and regenerable ----
+data/raw/
+data/cache/
+models/*.pkl
+
+# ---- standard python ----
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+venv/
+.venv/
+.pytest_cache/
