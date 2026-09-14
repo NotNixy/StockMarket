@@ -42,6 +42,10 @@ class ScreenConfig:
         a share that is RM 5,000 in a single position.
     min_history    : bars of history required before a stock is eligible, so
         features with a lookback have something to work with.
+    backfill_shariah : apply the earliest SC release to all earlier dates.
+        Lookahead bias, off by default. See compliant_on(). Turn it on only
+        when you have too few releases to cover the backtest window, and
+        record it as a limitation of any result produced with it.
     """
     min_median_dtv: float = 500_000.0
     lookback_days: int = 60
@@ -49,6 +53,7 @@ class ScreenConfig:
     max_price: float = 50.00
     min_history: int = 120
     require_shariah: bool = True
+    backfill_shariah: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -78,26 +83,44 @@ def load_shariah_lists(path: str | Path) -> pd.DataFrame:
     return df.drop_duplicates().sort_values(["list_date", "ticker"])
 
 
-def compliant_on(lists: pd.DataFrame, date: pd.Timestamp) -> set[str]:
+def compliant_on(lists: pd.DataFrame, date: pd.Timestamp,
+                 backfill: bool = False) -> set[str]:
     """Tickers compliant as of `date`: the most recent release on or before it.
 
     Returns an empty set if `date` precedes the first release -- deliberately.
     An empty universe is a loud failure; silently falling back to the earliest
     available list would be a quiet one.
+
+    `backfill=True` applies the EARLIEST release to all prior dates. This is
+    lookahead bias, knowingly accepted: a stock that became compliant in 2025
+    is treated as compliant in 2019, when you could not have held it. It exists
+    because one SC release leaves ten months of usable history and eight years
+    of empty universe, and a biased backtest you have labelled beats no
+    backtest at all. The bias is optimistic and its size is unknown.
+
+    The honest fix is more releases. The SC archives them; each parsed file
+    appended to data/shariah.csv shrinks the backfilled window.
     """
     date = pd.Timestamp(date).normalize()
     eligible = lists.loc[lists["list_date"] <= date, "list_date"]
     if eligible.empty:
-        return set()
+        if not backfill or lists.empty:
+            return set()
+        earliest = lists["list_date"].min()
+        return set(lists.loc[lists["list_date"] == earliest, "ticker"])
     latest = eligible.max()
     return set(lists.loc[lists["list_date"] == latest, "ticker"])
 
 
-def add_shariah_flag(panel: pd.DataFrame, lists: pd.DataFrame) -> pd.DataFrame:
+def add_shariah_flag(panel: pd.DataFrame, lists: pd.DataFrame,
+                     backfill: bool = False) -> pd.DataFrame:
     """Add a point-in-time `shariah` boolean to a long panel.
 
     Implemented as a merge_asof on release date rather than a per-row lookup,
     so it stays fast on a full panel.
+
+    `backfill=True` extends the earliest release backwards -- see
+    compliant_on() for why that is lookahead bias and when it is worth it.
     """
     out = panel.sort_values("date").copy()
 
@@ -108,8 +131,10 @@ def add_shariah_flag(panel: pd.DataFrame, lists: pd.DataFrame) -> pd.DataFrame:
     rel = pd.DataFrame({"date": releases, "release": releases})
     out = pd.merge_asof(out, rel, on="date", direction="backward")
 
+    earliest = membership[releases[0]] if (backfill and releases) else None
     out["shariah"] = [
-        (t in membership[r]) if pd.notna(r) else False
+        (t in membership[r]) if pd.notna(r)
+        else (earliest is not None and t in earliest)
         for t, r in zip(out["ticker"], out["release"])
     ]
     return out.drop(columns="release")
@@ -162,7 +187,7 @@ def screen(panel: pd.DataFrame,
             raise ValueError(
                 "require_shariah=True but no shariah_lists supplied. "
                 "Pass the parsed SC list, or set require_shariah=False.")
-        out = add_shariah_flag(out, shariah_lists)
+        out = add_shariah_flag(out, shariah_lists, cfg.backfill_shariah)
     else:
         out["shariah"] = True
 

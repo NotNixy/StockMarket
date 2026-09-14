@@ -168,3 +168,32 @@ def test_board_lots_limit_how_many_names_fit():
     assert max_affordable_names(pd.Series([10.0, 12.0, 14.0]), 10_000) == 8
     assert max_affordable_names(pd.Series([12.0]), 500) == 0
     assert max_affordable_names(pd.Series([], dtype=float), 10_000) == 0
+
+
+# ------------------------------------------------------- backfill (lookahead)
+def test_backfill_is_off_by_default(tmp_path):
+    lists = make_lists(tmp_path, {"2024-05-30": ["AAA"]})
+    assert compliant_on(lists, "2024-01-01") == set()
+
+
+def test_backfill_extends_the_earliest_release_backwards(tmp_path):
+    lists = make_lists(tmp_path, {"2024-05-30": ["AAA"], "2024-11-28": ["AAA", "BBB"]})
+    # Before any release, backfill uses the EARLIEST list -- not the latest,
+    # which would import even more future knowledge.
+    assert compliant_on(lists, "2024-01-01", backfill=True) == {"AAA.KL"}
+
+
+def test_backfill_does_not_change_dates_after_a_release(tmp_path):
+    lists = make_lists(tmp_path, {"2024-05-30": ["AAA"], "2024-11-28": ["AAA", "BBB"]})
+    for d in ("2024-06-01", "2024-12-01"):
+        assert compliant_on(lists, d) == compliant_on(lists, d, backfill=True)
+
+
+def test_screen_config_carries_the_backfill_flag(tmp_path):
+    lists = make_lists(tmp_path, {"2025-01-01": ["AAA", "BBB"]})
+    strict = screen(make_panel(), ScreenConfig(lookback_days=20, min_history=30), lists)
+    loose = screen(make_panel(), ScreenConfig(lookback_days=20, min_history=30,
+                                              backfill_shariah=True), lists)
+    # The panel predates the release entirely.
+    assert strict["eligible"].sum() == 0
+    assert loose["eligible"].sum() > 0
