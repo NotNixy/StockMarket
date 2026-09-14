@@ -68,6 +68,8 @@ core/
   loader.py      yfinance fetch + Parquet cache, incremental.
   universe.py    point-in-time liquidity + Shariah screen.
   validate.py    ten integrity checks, PAIP-style.
+  repair.py      split back-adjustment, quarantine, bad-bar removal.
+  tickers.py     candidate Bursa codes; verified by the fetch itself.
 research/
   metrics.py       Sharpe, drawdown, and the DEFLATED Sharpe.
   backtest.py      the harness. Signal at t, fill at t+1, costs on turnover.
@@ -183,10 +185,12 @@ screened universe definition.
 - [x] `research/strategies.py` — 26 tests
 - [x] `tournament/standing.py` — 20 tests
 - [x] `tournament/charts.py` + `app.py` — 8 tests, dashboard runs
-- [ ] real Bursa data: ticker list, SC Shariah list parsed to CSV
+- [x] `core/tickers.py` + `scripts/fetch_universe.py` — 8 tests
+- [x] `core/repair.py` — 30 tests, calibrated against real faults
+- [ ] SC Shariah list parsed to `data/shariah.csv`
 - [ ] execution backends: paper, live
 
-171 tests passing. Run `pytest -q`.
+209 tests passing. Run `pytest -q`.
 
 ### The tests worth reading
 
@@ -218,3 +222,44 @@ Compliance on any date resolves to the most recent release on or before it.
 A date earlier than the first release yields an **empty** universe rather than
 falling back to the oldest list — an empty universe is a loud failure, and a
 silent fallback would be lookahead.
+
+
+## What the real data actually looked like
+
+Running the checks over 58 Bursa tickers, 2018-2026 (122,637 bars) found three
+faults. None of them looked wrong in a chart:
+
+**VITROX (0097) fell 50.3% on 2024-05-02** -- in the adjusted series too, at a
+ratio of 2.014, on 6.5x normal volume, and the price then sat dead flat for
+days. An unadjusted 2-for-1 split. A momentum model reads it as the worst
+stock in the universe; a reversal model buys it.
+
+**FRONTKEN (0208) has adj_close identical to close across 1,781 bars**, while
+57 of the other tickers show a median divergence of RM 1.38. Its dividends were
+never adjusted, so every ex-dividend date is a fake loss. Not repairable
+without a dividend feed, so the ticker is quarantined.
+
+**One CelcomDigi (6947) bar has close 4.49 against a high of 4.48.** A one-sen
+error, and any high/low feature built on it is meaningless.
+
+### The mistake worth keeping
+
+The first version of `detect_splits` used a 4% ratio tolerance and "repaired"
+two genuine price moves in 5202 -- a news rally (+44.6% on 16x volume) and a
+speculative run (+54.1% on 59x volume that kept climbing for two weeks). It
+rewrote real history, which is exactly what the module's own docstring warns
+against.
+
+The fix was to calibrate against the measured cases rather than pick a number
+by feel:
+
+| | ratio off | volume | 3 days after |
+|---|---|---|---|
+| 0097 real split | **0.7%** | 6.5x | **+0.0%** |
+| 5202 news rally | 3.6% | 16.3x | +2.5% |
+| 5202 speculation | 2.7% | **58.6x** | **+53.2%** |
+
+Three gates now, all required: ratio within 1.5% of a known split, volume under
+10x its own recent median, and under 10% drift over the following three bars.
+Deliberately conservative -- a missed split surfaces as a flagged extreme move
+for a human to read, while a false positive silently fabricates prices.

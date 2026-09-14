@@ -1,9 +1,20 @@
-pandas==2.2.3
-numpy==2.1.3
-yfinance==0.2.51
-pyarrow==18.1.0
-scikit-learn==1.5.2
-matplotlib==3.9.3
-streamlit==1.41.1
-pytest==8.3.4
-scipy==1.14.1
+# Minimum floors rather than exact pins.
+#
+# Exact pins looked more rigorous and were worse: they forced pip to BUILD
+# pandas from source on a Python version the pinned release has no wheel for,
+# which needs a C++ toolchain and fails. Floors let pip pick a release that
+# ships a wheel for whatever Python you have.
+#
+# For reproducibility, capture what actually installed once it works:
+#     .venv\Scripts\python.exe -m pip freeze > requirements.lock.txt
+# That file records the exact set, without making the install brittle.
+
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+matplotlib>=3.7
+pyarrow>=14.0
+yfinance>=0.2.40
+streamlit>=1.30
+scikit-learn>=1.3
+pytest>=7.4
