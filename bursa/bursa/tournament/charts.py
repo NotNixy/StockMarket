@@ -202,3 +202,44 @@ def gap_chart(days: np.ndarray, my_path: np.ndarray, target: float,
     ax.margins(x=0.08)
     fig.tight_layout()
     return fig
+
+
+def walkforward_chart(folds, theme: Theme = LIGHT):
+    """In-sample vs out-of-sample Sharpe, fold by fold.
+
+    The gap between the pairs IS the overfitting. Paired bars rather than a
+    scatter because the comparison is within-fold, not across folds -- and
+    each bar carries its value, so colour is never the only encoding.
+    """
+    fig, ax = plt.subplots(figsize=(9, 3.6), dpi=120)
+    _style(ax, theme, ylabel="Sharpe ratio")
+
+    x = np.arange(len(folds))
+    is_v = [f.is_sharpe for f in folds]
+    oos_v = [f.oos_sharpe for f in folds]
+    w = 0.38
+
+    ax.bar(x - w/2, is_v, w, color=theme.series[0], label="in-sample",
+           zorder=3, edgecolor=theme.surface, linewidth=1.5)
+    ax.bar(x + w/2, oos_v, w, color=theme.series[1], label="out-of-sample",
+           zorder=3, edgecolor=theme.surface, linewidth=1.5)
+
+    for xi, v in zip(x - w/2, is_v):
+        ax.text(xi, v + 0.06, f"{v:.2f}", ha="center", fontsize=7.5,
+                color=theme.ink)
+    for xi, v in zip(x + w/2, oos_v):
+        ax.text(xi, v + 0.06, f"{v:.2f}", ha="center", fontsize=7.5,
+                color=theme.ink, fontweight="600")
+
+    ax.axhline(0, color=theme.grid, lw=1.0, zorder=1)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"fold {f.index}\n{f.test_start.strftime('%b %y')}"
+                        for f in folds], fontsize=7.5)
+    ax.set_title("Chosen on training data, measured on data it had not seen",
+                 color=theme.ink, fontsize=12, fontweight="bold",
+                 loc="left", pad=10)
+    leg = ax.legend(frameon=False, fontsize=8, loc="upper left")
+    for t in leg.get_texts():
+        t.set_color(theme.ink2)
+    fig.tight_layout()
+    return fig

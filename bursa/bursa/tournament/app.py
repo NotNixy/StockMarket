@@ -39,9 +39,10 @@ from research.baselines import (
 )
 from research.harness_check import synth_panel
 from research.strategies import PRESETS
+from research.walkforward import walk_forward
 from tournament.charts import (
     DARK, LIGHT, equity_chart, gap_chart, pwin_chart,
-    random_distribution_chart, universe_chart,
+    random_distribution_chart, universe_chart, walkforward_chart,
 )
 from tournament.standing import Contest, assess, strategy_table
 
@@ -117,8 +118,8 @@ if not is_real:
         f"Populate `{DATA_DIR}` with `core.loader.fetch_many()` to replace them.",
         icon="⚠️")
 
-tab_t, tab_b, tab_u, tab_d = st.tabs(
-    ["Tournament", "Backtest", "Universe", "Data health"])
+tab_t, tab_b, tab_w, tab_u, tab_d = st.tabs(
+    ["Tournament", "Backtest", "Walk-forward", "Universe", "Data health"])
 
 
 # --------------------------------------------------------------------------
@@ -223,6 +224,77 @@ with tab_b:
         "without it, after trying fifty configurations, is the single most "
         "common way a backtest misleads its author."
     )
+
+
+# --------------------------------------------------------------------------
+# Walk-forward -- the only tab whose numbers are out-of-sample
+# --------------------------------------------------------------------------
+@st.cache_data(show_spinner="Running walk-forward...")
+def run_wf(panel: pd.DataFrame, top_n: int, n_folds: int):
+    cfg = BacktestConfig(capital=10_000, rebalance="ME", broker=MOOMOO,
+                         slippage=SlippageModel(15.0, 0.0), max_positions=top_n)
+    strategies = {n: (lambda n=n: PRESETS[n](top_n=top_n)) for n in PRESETS}
+    return walk_forward(panel, strategies, cfg, n_folds=n_folds,
+                        train_months=24, test_months=6, expanding=True,
+                        holdout_months=12, verbose=False)
+
+
+with tab_w:
+    st.caption(
+        "Every other tab reports numbers from data the strategy was chosen on. "
+        "These are not: at each fold the best strategy on the training window "
+        "is picked, then measured on months it has never seen."
+    )
+    n_folds = st.slider("Folds", 3, 8, 6)
+    try:
+        wf = run_wf(panel, int(top_n), int(n_folds))
+    except Exception as e:
+        st.error(f"Not enough history to walk forward: {e}")
+        wf = None
+
+    if wf and wf.folds:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Mean in-sample SR", f"{wf.mean_is:+.2f}")
+        c2.metric("Mean out-of-sample SR", f"{wf.mean_oos:+.2f}")
+        c3.metric("Survival ratio", f"{wf.degradation:+.2f}",
+                  help="OOS divided by IS. Below ~0.5 means most of the "
+                       "apparent edge was fitted rather than found.")
+        c4.metric("Stitched OOS Sharpe", f"{wf.stitched_sharpe:+.2f}",
+                  help="The equity curve you would actually have lived "
+                       "through, choosing as you went.")
+
+        st.pyplot(walkforward_chart(wf.folds, theme))
+
+        st.subheader("Fold by fold")
+        st.dataframe(pd.DataFrame([{
+            "fold": f.index,
+            "train ends": f.train_end.date(),
+            "test window": f"{f.test_start.date()} → {f.test_end.date()}",
+            "chosen": f.chosen,
+            "IS Sharpe": f.is_sharpe,
+            "OOS Sharpe": f.oos_sharpe,
+            "OOS return": f.oos_return,
+            "OOS max DD": f.oos_maxdd,
+        } for f in wf.folds]).style.format({
+            "IS Sharpe": "{:+.2f}", "OOS Sharpe": "{:+.2f}",
+            "OOS return": "{:+.2%}", "OOS max DD": "{:.2%}",
+        }), use_container_width=True)
+
+        if wf.holdout_start is not None:
+            st.info(
+                f"**Holdout from {wf.holdout_start.date()} has not been "
+                f"touched.** Evaluate it once, at the very end, with "
+                f"`research.walkforward.evaluate_holdout` — and count that as "
+                f"a trial. Re-running it while adjusting the strategy turns it "
+                f"into another training set.", icon="🔒")
+
+        chosen = [f.chosen for f in wf.folds]
+        if len(set(chosen)) == 1:
+            st.warning(
+                f"**{chosen[0]} was chosen in every fold**, so the selection "
+                f"step never actually selected anything. This is a test of "
+                f"that one strategy, not of a process for picking between "
+                f"them.", icon="⚠️")
 
 
 # --------------------------------------------------------------------------
