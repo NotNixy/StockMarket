@@ -1,26 +1,3 @@
-"""The dashboard.
-
-Run from the repo root:
-
-    streamlit run tournament/app.py
-
-It starts on SYNTHETIC data so it works before any Bursa data exists -- every
-panel is live, the numbers are just made up. The banner says so, loudly, and
-it does not go away until you point DATA_DIR at a real cache.
-
-Six tabs, in the order you would actually use them:
-
-  Live        -- delayed quotes, your position, and the gap to the winning score.
-  Tournament  -- the daily decision. Where you stand, what wins, add or cut risk.
-  Backtest    -- the strategy against every baseline it has to beat.
-  Walk-forward-- chosen on training data, measured on data it had not seen.
-  Universe    -- what was tradable, and why things were excluded.
-  Data health -- the ten integrity checks.
-
-The Live tab is DELAYED, by about 15 minutes, and says so on every render.
-See core.quotes for why a deployed dashboard cannot carry a real-time Bursa
-feed, and why this strategy does not need one.
-"""
 from __future__ import annotations
 
 import sys
