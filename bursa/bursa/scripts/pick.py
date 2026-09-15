@@ -59,6 +59,40 @@ JOURNAL = Path("results/picks.csv")
 DEFAULT_MAX_AGE_DAYS = 3
 
 
+# A date carrying fewer eligible names than this is a ragged edge, not a
+# trading day. Set well below a normal day's count (~190) and well above the
+# handful a partial refresh produces.
+MIN_NAMES_FOR_A_REAL_DAY = 40
+
+
+def latest_tradable_date(panel: pd.DataFrame,
+                         min_names: int = MIN_NAMES_FOR_A_REAL_DAY
+                         ) -> pd.Timestamp:
+    """The most recent date that actually has a universe on it.
+
+    NOT simply `panel["date"].max()`. The cache is built one ticker at a time,
+    so a refresh that touches some names and not others leaves a ragged edge:
+    the newest date holds only the tickers fetched most recently. That
+    happened here -- re-fetching 142 dropped-out names gave them a bar for
+    today while the other 865 still ended yesterday, so the last date in the
+    panel contained nothing but illiquid delisted companies and the screen
+    emptied the universe.
+
+    Ranking on such a date is the dangerous version of this bug: with a
+    slightly higher threshold it would not error, it would just quietly rank
+    a handful of names and hand back a confident pick from a universe of
+    five.
+    """
+    counts = (panel[panel["eligible"]] if "eligible" in panel else panel)
+    counts = counts.groupby("date", observed=True)["ticker"].nunique()
+    good = counts[counts >= min_names]
+    if good.empty:
+        raise SystemExit(
+            f"No date in the panel has {min_names}+ eligible names. The "
+            f"screen is empty -- rebuild with scripts.build_panel.")
+    return good.index.max()
+
+
 def rank_universe(panel: pd.DataFrame, rule: str = "momentum",
                   lookback: int = 60) -> pd.DataFrame:
     """Score every currently-eligible name, best first.
@@ -74,7 +108,8 @@ def rank_universe(panel: pd.DataFrame, rule: str = "momentum",
     prices = panel.pivot_table(index="date", columns="ticker",
                                values="adj_close", aggfunc="last").sort_index()
 
-    last = panel["date"].max()
+    last = latest_tradable_date(panel)
+    prices = prices[prices.index <= last]
     today = panel[panel["date"] == last]
     live = set(today.loc[today["eligible"], "ticker"] if "eligible" in today
                else today["ticker"])
@@ -95,7 +130,7 @@ def enrich(ranked: pd.DataFrame, panel: pd.DataFrame,
            capital: float, broker=MOOMOO,
            slippage: SlippageModel | None = None) -> pd.DataFrame:
     """Attach everything needed to actually place the order."""
-    last = panel["date"].max()
+    last = latest_tradable_date(panel)
     today = panel[panel["date"] == last].set_index("ticker")
 
     rows = []
@@ -123,14 +158,24 @@ def enrich(ranked: pd.DataFrame, panel: pd.DataFrame,
 
 
 def check_freshness(panel: pd.DataFrame, max_age_days: int) -> tuple[bool, str]:
-    """Is the newest bar recent enough to act on?"""
-    last = pd.Timestamp(panel["date"].max()).normalize()
+    """Is the newest USABLE bar recent enough to act on?
+
+    Measured against the last date with a real universe, not the last date in
+    the file -- see latest_tradable_date. A ragged edge would otherwise report
+    the panel as fresh while the day it reports on is unusable.
+    """
+    last = pd.Timestamp(latest_tradable_date(panel)).normalize()
+    newest = pd.Timestamp(panel["date"].max()).normalize()
     today = pd.Timestamp.now().normalize()
     age = (today - last).days
+    note = ""
+    if newest > last:
+        note = (f"  (panel runs to {newest.date()}, but that date has too "
+                f"few eligible names — partial refresh)")
     if age > max_age_days:
-        return False, (f"newest bar is {last.date()}, {age} days old "
-                       f"(limit {max_age_days}).")
-    return True, f"newest bar {last.date()}, {age} days old."
+        return False, (f"newest usable bar is {last.date()}, {age} days old "
+                       f"(limit {max_age_days}).{note}")
+    return True, f"newest usable bar {last.date()}, {age} days old.{note}"
 
 
 def journal(pick: pd.Series, capital: float, rule: str,

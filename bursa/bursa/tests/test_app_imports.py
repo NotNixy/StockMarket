@@ -113,3 +113,49 @@ def test_the_guarded_import_block_is_still_in_place():
     # the guard's failure path, or Streamlit raises a second, confusing error
     # on top of the first.
     assert src.index("set_page_config") < src.index("except ImportError")
+
+
+# ------------------------------------------------------- the pick script
+def test_a_ragged_cache_edge_does_not_produce_a_pick_from_five_names():
+    """Caught on a real refresh, and the quiet version is the dangerous one.
+
+    The cache is written one ticker at a time, so refreshing some names and
+    not others leaves a last date holding only the tickers just fetched. Here
+    that date contained nothing but illiquid delisted companies and the screen
+    emptied the universe -- a loud failure. Had the threshold been slightly
+    different it would instead have ranked a handful of names and returned a
+    confident pick from a universe of five.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from scripts.pick import latest_tradable_date
+
+    dates = pd.date_range("2026-01-01", periods=100, freq="B")
+    full = pd.concat([
+        pd.DataFrame({"date": dates, "ticker": f"T{i:03d}.KL",
+                      "eligible": True})
+        for i in range(80)], ignore_index=True)
+    # Three stragglers get one extra, later bar -- the ragged edge.
+    edge = dates[-1] + pd.Timedelta(days=1)
+    ragged = pd.DataFrame({"date": [edge] * 3,
+                           "ticker": ["T000.KL", "T001.KL", "T002.KL"],
+                           "eligible": True})
+    panel = pd.concat([full, ragged], ignore_index=True)
+
+    assert panel["date"].max() == edge
+    assert latest_tradable_date(panel) == dates[-1], (
+        "ranked the ragged edge instead of the last real trading day")
+
+
+def test_a_genuinely_complete_last_day_is_used():
+    import pandas as pd
+
+    from scripts.pick import latest_tradable_date
+
+    dates = pd.date_range("2026-01-01", periods=100, freq="B")
+    panel = pd.concat([
+        pd.DataFrame({"date": dates, "ticker": f"T{i:03d}.KL",
+                      "eligible": True})
+        for i in range(80)], ignore_index=True)
+    assert latest_tradable_date(panel) == dates[-1]

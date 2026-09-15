@@ -101,6 +101,7 @@ except ImportError as exc:
     _fail("The app could not import its own modules.", exc)
 
 DATA_DIR = Path("data/raw")
+SCREENED = Path("data/screened.parquet")
 
 
 # --------------------------------------------------------------------------
@@ -108,12 +109,32 @@ DATA_DIR = Path("data/raw")
 # --------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def load_data(use_real: bool):
-    """Real cache if it exists and was asked for, otherwise synthetic."""
+    """The screened panel if it exists, then the raw cache, else synthetic.
+
+    The screened file is preferred and it matters. This used to load the raw
+    cache and set `eligible = True` on every row, which silently switched the
+    entire screen off: the Backtest, Walk-forward and Universe tabs were
+    running over all 865 fetched tickers -- including names that fail the
+    Shariah, liquidity and price filters -- while the Universe tab cheerfully
+    reported everything as eligible. Every number on real data was computed
+    over a universe you could not actually have traded.
+
+    `data/screened.parquet` carries the real per-row `eligible` flag from
+    core.universe.screen(). Build it with:
+
+        python -m scripts.build_panel
+    """
+    if use_real and SCREENED.exists():
+        return pd.read_parquet(SCREENED), True
+
     if use_real and DATA_DIR.exists() and any(DATA_DIR.glob("*.parquet")):
         from core.loader import load_panel
         panel = load_panel(raw_dir=DATA_DIR)
-        panel["eligible"] = True          # real screen needs the SC list
-        return panel, True
+        # No screen available. Marking everything eligible is a LIE that this
+        # branch is honest about: the flag is set so the tabs render, and
+        # `screened` comes back False so the UI can say so.
+        panel["eligible"] = True
+        return panel, "unscreened"
     return synth_panel(n_tickers=40, n_days=750, seed=1), False
 
 
@@ -162,12 +183,26 @@ panel, is_real = load_data(use_real)
 contest = Contest(n_entrants=int(n_entrants), field_vol=float(field_vol),
                   total_days=int(total_days))
 
-if not is_real:
+if is_real == "unscreened":
+    # The dangerous middle state: real prices, no screen. Louder than the
+    # synthetic banner, because invented numbers are obviously invented and
+    # these are not -- they look exactly like results.
+    st.error(
+        "**Real prices, NO SCREEN.** Every name in the raw cache is being "
+        "treated as tradable, including ones that fail the Shariah, "
+        "liquidity and price filters. Results below are computed over a "
+        "universe you could not have traded. Build the screened panel with "
+        "`python -m scripts.build_panel`.", icon="🚨")
+elif not is_real:
     st.warning(
         "**Synthetic data.** Every figure below is generated from random "
         "walks, not Bursa. The dashboard is live; the numbers are invented. "
         f"Populate `{DATA_DIR}` with `core.loader.fetch_many()` to replace them.",
         icon="⚠️")
+else:
+    st.caption(f"Screened panel: {panel['ticker'].nunique()} tickers, "
+               f"{len(panel):,} bars, "
+               f"{panel['date'].min().date()} to {panel['date'].max().date()}.")
 
 tab_l, tab_t, tab_b, tab_w, tab_u, tab_d = st.tabs(
     ["Live", "Tournament", "Backtest", "Walk-forward", "Universe",
@@ -464,9 +499,11 @@ with tab_w:
 # Universe
 # --------------------------------------------------------------------------
 with tab_u:
-    if "eligible" in panel.columns and not is_real:
-        st.info("Synthetic panel: every name is marked eligible. The real "
-                "screen needs the SC Shariah list and a liquidity history.",
+    if is_real is not True:
+        st.info("This panel marks every name eligible — either it is "
+                "synthetic, or it is the raw cache with no screen applied. "
+                "The real screen needs the SC Shariah list and a liquidity "
+                "history; build it with `python -m scripts.build_panel`.",
                 icon="ℹ️")
 
     daily = (panel.groupby("date", observed=True)

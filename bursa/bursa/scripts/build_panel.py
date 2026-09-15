@@ -40,6 +40,7 @@ if str(_ROOT) not in sys.path:
 import pandas as pd
 
 from core.repair import repair
+from core.universe import ScreenConfig, load_shariah_lists, screen
 from core.validate import validate
 
 
@@ -58,6 +59,15 @@ def main() -> int:
     ap.add_argument("--raw", type=Path, default=Path("data/raw"))
     ap.add_argument("--splits", type=Path, default=Path("data/splits.csv"))
     ap.add_argument("--out", type=Path, default=Path("data/clean_panel.parquet"))
+    ap.add_argument("--shariah", type=Path, default=Path("data/shariah.csv"))
+    ap.add_argument("--screened", type=Path,
+                    default=Path("data/screened.parquet"))
+    ap.add_argument("--backfill", action="store_true", default=True,
+                    help="apply the earliest SC release to all prior dates "
+                         "(lookahead; on by default so the early years are "
+                         "usable, and reported as backfilled every run)")
+    ap.add_argument("--no-backfill", dest="backfill", action="store_false",
+                    help="exclude everything before the earliest SC release")
     ap.add_argument("--no-splits", action="store_true",
                     help="ignore the recorded corporate actions (shows what "
                          "the heuristic does unsupervised -- do not ship this)")
@@ -88,6 +98,40 @@ def main() -> int:
     clean.to_parquet(args.out, index=False)
     print(f"\nwrote {args.out}  ({len(clean):,} bars, "
           f"{clean['ticker'].nunique()} tickers)")
+
+    # The screen belongs here, not in a separate step someone forgets to run.
+    # The dashboard and the pick script both read data/screened.parquet, and a
+    # stale one is worse than a missing one: it silently answers with an old
+    # universe instead of failing.
+    if args.shariah.exists():
+        lists = load_shariah_lists(args.shariah)
+        releases = sorted(lists["list_date"].unique())
+        first = releases[0]
+        print(f"\nscreening against {len(releases)} SC release(s), "
+              f"earliest {first.date()}")
+
+        cfg = ScreenConfig(backfill_shariah=args.backfill)
+        screened = screen(clean, cfg, lists)
+        screened.to_parquet(args.screened, index=False)
+
+        elig = screened[screened["eligible"]]
+        real = elig[elig["date"] >= first]
+        print(f"  eligible bars: {len(elig):,}  "
+              f"({elig['ticker'].nunique()} distinct names)")
+        # Saying which part is real and which is assumed, every run. A single
+        # eligible-count headline hides the fact that most of it may rest on
+        # a compliance list applied backwards.
+        share = len(real) / len(elig) if len(elig) else 0.0
+        print(f"  point-in-time compliance: {len(real):,} bars ({share:.0%})")
+        print(f"  BACKFILLED (lookahead):   {len(elig) - len(real):,} bars "
+              f"({1 - share:.0%})  — everything before {first.date()}")
+        if not args.backfill:
+            print("  backfill is OFF: the pre-release window is excluded "
+                  "entirely.")
+        print(f"\nwrote {args.screened}")
+    else:
+        print(f"\n{args.shariah} not found — no screen written. "
+              f"Run scripts.fetch_sc_lists first.")
     return 0
 
 
