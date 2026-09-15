@@ -170,6 +170,27 @@ def locate_recorded_splits(panel: pd.DataFrame,
     k["value"] = pd.to_numeric(k["value"], errors="coerce")
     k = k[k["value"].notna() & (k["value"] > 0)]
 
+    # Deduplicate HERE, not only at the point the file is written.
+    #
+    # A corporate action recorded twice gets APPLIED twice: prices before the
+    # date are divided by the ratio, then divided again. Observed on real
+    # data -- 8567 and 9318 had three splits duplicated because the same
+    # event reached the CSV with two float spellings ("0.0333333333333333"
+    # and "0.03333333333333333"), which drop_duplicates at write time treated
+    # as distinct rows. Those ratios were near 1.03 so the corruption was a
+    # few percent; the identical mechanism on a 2-for-1 halves the history
+    # twice and nothing downstream would flag it.
+    #
+    # Rounding before the dedup is what makes it robust: exact float equality
+    # is not a safe key for a value that has been through a CSV.
+    k["value"] = k["value"].round(8)
+    before = len(k)
+    k = k.drop_duplicates(subset=["ticker", "date", "value"])
+    if len(k) < before:
+        dropped = before - len(k)
+        print(f"  note: ignored {dropped} duplicate corporate action(s) — "
+              f"applying one twice would re-adjust the price history.")
+
     out = panel.sort_values(["ticker", "date"]).copy()
     out["adj_ret"] = out.groupby("ticker", observed=True)["adj_close"].pct_change()
     by_ticker = dict(tuple(out.groupby("ticker", observed=True)))

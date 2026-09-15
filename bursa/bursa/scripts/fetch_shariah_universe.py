@@ -102,7 +102,15 @@ def main() -> int:
         fresh = pd.concat(split_rows, ignore_index=True)
         if SPLITS.exists():
             fresh = pd.concat([pd.read_csv(SPLITS, parse_dates=["date"]), fresh],
-                              ignore_index=True).drop_duplicates()
+                              ignore_index=True)
+        # Round before deduplicating. The same event can reach this file with
+        # two float spellings -- one straight from the API, one round-tripped
+        # through the CSV -- and plain drop_duplicates keeps both. core.repair
+        # then applies the split twice. It defends itself now too, but the
+        # file should not accumulate the duplicates in the first place.
+        fresh["value"] = pd.to_numeric(fresh["value"], errors="coerce").round(8)
+        fresh = fresh.dropna(subset=["value"]).drop_duplicates(
+            subset=["ticker", "date", "value"])
         fresh.sort_values(["ticker", "date"]).to_csv(SPLITS, index=False)
         print(f"\n  {len(fresh)} split events recorded in {SPLITS}")
 

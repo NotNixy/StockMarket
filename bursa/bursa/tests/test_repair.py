@@ -424,3 +424,42 @@ def test_repair_prefers_the_record_over_the_pattern():
     # GHOST's step survives untouched -- it is reported, not rewritten.
     g = out[out["ticker"] == "GHOST.KL"].sort_values("date")
     assert g["close"].iloc[151] / g["close"].iloc[149] < 0.6
+
+
+def test_a_corporate_action_recorded_twice_is_applied_only_once():
+    """Found on real data: 8567 and 9318 had splits applied twice.
+
+    The same event reached data/splits.csv with two float spellings --
+    "0.0333333333333333" and "0.03333333333333333" -- so drop_duplicates at
+    write time kept both rows, and the repair layer divided the pre-split
+    history by the ratio twice. Those ratios were near 1.03, so the damage
+    was a few percent. The identical mechanism on a 2-for-1 halves ten years
+    of history twice, and nothing downstream would notice.
+    """
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    step = p["date"].iloc[150]
+    # The same split, twice, at float spellings that are not textually equal.
+    twice = pd.DataFrame({
+        "date": [step, step], "ticker": ["AAA.KL", "AAA.KL"],
+        "value": [2.0, 2.0000000001],
+    })
+    loc = locate_recorded_splits(p, twice)
+    repairs = loc[loc["needs_repair"]]
+    assert len(repairs) == 1, f"emitted {len(repairs)} repairs for one split"
+
+    once = locate_recorded_splits(p, recorded(date=step, value=2.0))
+    out_twice, _ = repair(p, known_splits=twice, verbose=False)
+    out_once, _ = repair(p, known_splits=recorded(date=step), verbose=False)
+    pd.testing.assert_frame_equal(
+        out_twice.reset_index(drop=True), out_once.reset_index(drop=True))
+
+
+def test_genuinely_different_actions_on_one_day_are_both_kept():
+    """Dedup must key on the RATIO too. A bonus issue and a consolidation can
+    legitimately land on the same date, and collapsing them would silently
+    drop a real corporate action."""
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    step = p["date"].iloc[150]
+    two = pd.DataFrame({"date": [step, step], "ticker": ["AAA.KL", "AAA.KL"],
+                        "value": [2.0, 1.1]})
+    assert len(locate_recorded_splits(p, two)) == 2
