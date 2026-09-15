@@ -146,12 +146,29 @@ def run_contest(panel: pd.DataFrame,
     """Simulate `n_trials` contests and report how often you finish first."""
     rng = np.random.default_rng(cfg.seed)
 
-    use = panel
+    # Price history and eligibility are SEPARATE matrices, deliberately.
+    #
+    # Pivoting from eligible-only rows looks equivalent and is not: a name
+    # that was too illiquid 60 days ago has NaN prices back there, so its
+    # momentum comes out NaN and it is silently dropped from the candidate
+    # set. The names that fail this way are precisely the ones that just
+    # became liquid -- and a small cap crosses a liquidity threshold by
+    # rallying hard on volume, which is exactly the profile the momentum rule
+    # is trying to buy. Eligible-only pricing therefore excludes the strategy's
+    # best candidates and understates its P(win).
+    #
+    # Eligibility gates WHAT YOU MAY BUY on the day. Price history is price
+    # history. Keeping them apart is the difference.
+    prices = panel.pivot_table(index="date", columns="ticker",
+                               values=price_col, aggfunc="last").sort_index()
     if eligible_col in panel.columns:
-        use = panel[panel[eligible_col]]
-    prices = use.pivot_table(index="date", columns="ticker",
-                             values=price_col, aggfunc="last")
-    prices = prices.sort_index()
+        elig = (panel.pivot_table(index="date", columns="ticker",
+                                  values=eligible_col, aggfunc="last")
+                .reindex(index=prices.index, columns=prices.columns)
+                .fillna(False).astype(bool))
+    else:
+        elig = pd.DataFrame(True, index=prices.index, columns=prices.columns)
+    elig_arr = elig.to_numpy()
 
     n_dates = len(prices)
     first_start = cfg.lookback + 1
@@ -167,9 +184,9 @@ def run_contest(panel: pd.DataFrame,
     for t in range(cfg.n_trials):
         start_i = int(rng.integers(first_start, last_start))
         fwd = _window_returns(prices, start_i, cfg.horizon)
-        # A name is pickable only if it has a price at both ends of the
-        # window. Anything else would be a position you could not have held.
-        valid = np.isfinite(fwd)
+        # Pickable = tradable at the open AND priced at both ends of the
+        # window. Anything else is a position you could not have held.
+        valid = np.isfinite(fwd) & elig_arr[start_i]
         if valid.sum() < max(cfg.my_k, cfg.field_k) + 5:
             my_rets[t] = np.nan
             win_scores[t] = np.nan

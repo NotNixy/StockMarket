@@ -8,12 +8,18 @@ It starts on SYNTHETIC data so it works before any Bursa data exists -- every
 panel is live, the numbers are just made up. The banner says so, loudly, and
 it does not go away until you point DATA_DIR at a real cache.
 
-Four tabs, in the order you would actually use them:
+Six tabs, in the order you would actually use them:
 
+  Live        -- delayed quotes, your position, and the gap to the winning score.
   Tournament  -- the daily decision. Where you stand, what wins, add or cut risk.
   Backtest    -- the strategy against every baseline it has to beat.
+  Walk-forward-- chosen on training data, measured on data it had not seen.
   Universe    -- what was tradable, and why things were excluded.
   Data health -- the ten integrity checks.
+
+The Live tab is DELAYED, by about 15 minutes, and says so on every render.
+See core.quotes for why a deployed dashboard cannot carry a real-time Bursa
+feed, and why this strategy does not need one.
 """
 from __future__ import annotations
 
@@ -93,6 +99,10 @@ def _fail(title: str, exc: Exception) -> None:
 
 try:
     from core.costs import MOOMOO, SlippageModel, round_trip_pct
+    from core.feed import get_feed
+    from core.quotes import (
+        Position, Quote, market_status, standing,
+    )
     from core.validate import validate
     from research.backtest import BacktestConfig, run_backtest
     from research.baselines import (
@@ -105,6 +115,9 @@ try:
     from tournament.charts import (
         DARK, LIGHT, equity_chart, gap_chart, pwin_chart,
         random_distribution_chart, universe_chart, walkforward_chart,
+    )
+    from tournament.rules import (
+        Action, Situation, decide, explain_no_stop_loss,
     )
     from tournament.standing import Contest, assess, strategy_table
 except ImportError as exc:
@@ -179,8 +192,120 @@ if not is_real:
         f"Populate `{DATA_DIR}` with `core.loader.fetch_many()` to replace them.",
         icon="⚠️")
 
-tab_t, tab_b, tab_w, tab_u, tab_d = st.tabs(
-    ["Tournament", "Backtest", "Walk-forward", "Universe", "Data health"])
+tab_l, tab_t, tab_b, tab_w, tab_u, tab_d = st.tabs(
+    ["Live", "Tournament", "Backtest", "Walk-forward", "Universe",
+     "Data health"])
+
+
+# --------------------------------------------------------------------------
+# Live
+# --------------------------------------------------------------------------
+# Delayed quotes, labelled as delayed. See core.quotes for why this is not and
+# cannot be a real-time feed on a deployed dashboard, and why the strategy
+# does not need one.
+with tab_l:
+    st.subheader("Where you stand, right now")
+
+    lc1, lc2, lc3, lc4 = st.columns([2, 1, 1, 1])
+    live_ticker = lc1.text_input("Ticker", value="0270.KL",
+                                 help="The name you are holding.")
+    live_shares = lc2.number_input("Shares", min_value=0, value=6000, step=100)
+    live_entry = lc3.number_input("Entry price (RM)", min_value=0.0,
+                                  value=1.660, step=0.005, format="%.3f")
+    live_capital = lc4.number_input("Starting capital (RM)", min_value=1.0,
+                                    value=10_000.0, step=500.0)
+
+    state = market_status()
+    st.caption(f"Bursa is **{state.value}** "
+               f"(09:00–12:30 and 14:30–17:00 Malaysia time).")
+
+    if st.button("Refresh quote", type="primary"):
+        st.cache_data.clear()
+
+    # Real-time via moomoo's OpenD when this is running on your machine and
+    # the gateway is up; Yahoo's delayed feed otherwise. The panel states
+    # which one it got -- a fallback nobody notices is the dangerous kind.
+    @st.cache_data(ttl=30, show_spinner="fetching quote...")
+    def _live(t: str):
+        feed = get_feed()
+        q = feed.quote(t)
+        # Quote is frozen; return plain fields so Streamlit can cache it.
+        return {"price": q.price, "prev": q.prev_close, "at": q.quoted_at,
+                "stale": q.staleness(), "err": q.error,
+                "high": q.day_high, "low": q.day_low, "vol": q.volume,
+                "feed": feed.name, "realtime": feed.realtime,
+                "feed_desc": feed.describe()}
+
+    info = _live(live_ticker.strip().upper())
+    if info["realtime"]:
+        st.success(f"Feed: **{info['feed']}** — real-time.", icon="🟢")
+    else:
+        st.warning(f"Feed: **{info['feed']}**. {info['feed_desc']}", icon="🟡")
+
+    if info["err"] or info["price"] is None:
+        st.error(f"No quote for {live_ticker}: {info['err'] or 'no data'}")
+    else:
+        pos = Position(live_ticker.strip().upper(), int(live_shares),
+                       float(live_entry))
+        qq = Quote(pos.ticker, info["price"], info["prev"], info["high"],
+                   info["low"], info["vol"], info["at"])
+        stand = standing(pos, qq, capital=float(live_capital))
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Last", f"RM {info['price']:.3f}",
+                  f"{qq.change_pct:+.2%}" if qq.change_pct is not None else None)
+        m2.metric("Position", f"RM {stand['position_value']:,.0f}")
+        m3.metric("Contest return", f"{stand['return_pct']:+.2%}")
+        m4.metric("Gap to winning score", f"{stand['gap_pct']:+.2%}",
+                  help="Against +29%, the median winning score the contest "
+                       "simulator produced over real Bursa windows. It is the "
+                       "bar the field sets, not a forecast of your return.")
+
+        # The delay is stated every time, not buried in a tooltip. A quote
+        # presented as live is how you price an order against a market that
+        # moved on fifteen minutes ago.
+        st.caption(f"Quoted {info['at']:%Y-%m-%d %H:%M} MYT — {info['stale']}")
+        # The verdict, rendered where the temptation is: next to a moving
+        # price. Rules consulted only when you feel like consulting them are
+        # not rules.
+        st.divider()
+        st.subheader("What the rule says")
+
+        rc1, rc2, rc3 = st.columns(3)
+        r_days = rc1.number_input("Trading days left", 0, 60, 15)
+        r_halted = rc2.checkbox("Halted / suspended today")
+        r_elig = rc3.checkbox("Still passes the screen", value=True)
+        mc1, mc2 = st.columns(2)
+        mom_entry = mc1.number_input(
+            "60d momentum when you bought", value=1.20, step=0.05,
+            help="From the pick script's score column on the day you entered.")
+        mom_now = mc2.number_input("60d momentum now", value=1.20, step=0.05)
+
+        verdict = decide(Situation(
+            days_left=int(r_days),
+            my_return=float(stand["return_pct"] or 0.0),
+            position_return=float(pos.pnl_pct(qq) or 0.0),
+            halted=bool(r_halted), still_eligible=bool(r_elig),
+            momentum_at_entry=float(mom_entry), momentum_now=float(mom_now)))
+
+        if verdict.action is Action.HOLD:
+            st.success(f"**{verdict.action.value}** — {verdict.reason}",
+                       icon="✋")
+        else:
+            st.warning(f"**{verdict.action.value}** — {verdict.reason}",
+                       icon="🔁")
+        st.caption(verdict.detail)
+        with st.expander("Why there is no stop loss"):
+            st.markdown(explain_no_stop_loss())
+
+        if not info["realtime"]:
+            st.info(
+                "This is Yahoo's **delayed** KLSE data (~15 min) and the panel "
+                "never claims otherwise. **Read the live spread in moomoo "
+                "before you send an order.** To get real-time here, run this "
+                "dashboard on your own machine with OpenD started: "
+                "`python -m scripts.check_feed` verifies it.",
+                icon="ℹ️")
 
 
 # --------------------------------------------------------------------------
