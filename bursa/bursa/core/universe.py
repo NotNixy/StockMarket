@@ -135,6 +135,17 @@ def add_shariah_flag(panel: pd.DataFrame, lists: pd.DataFrame,
                   for d in releases}
 
     rel = pd.DataFrame({"date": releases, "release": releases})
+
+    # merge_asof refuses to join datetime columns of different RESOLUTION,
+    # and the two sides genuinely differ: parquet round-trips dates as
+    # datetime64[ms] while pd.to_datetime on the SC list CSV produces [us].
+    # It surfaces as "incompatible merge keys ... must be the same type",
+    # which names neither column and does not mention resolution at all.
+    # Whether it fires depends on the pandas version, so the same code can
+    # work on one machine and fail on another.
+    out["date"] = pd.to_datetime(out["date"]).astype("datetime64[ns]")
+    rel["date"] = pd.to_datetime(rel["date"]).astype("datetime64[ns]")
+
     out = pd.merge_asof(out, rel, on="date", direction="backward")
 
     earliest = membership[releases[0]] if (backfill and releases) else None

@@ -226,3 +226,24 @@ def test_an_ace_market_stock_screens_as_compliant(tmp_path):
     s = screen(panel, ScreenConfig(), load_shariah_lists(p))
     assert s["shariah"].all()
     assert s["eligible"].any()
+
+
+def test_the_screen_survives_mismatched_datetime_resolutions():
+    """Parquet round-trips dates as datetime64[ms]; pd.to_datetime on a CSV
+    gives [us]. merge_asof refuses to join across resolutions with a message
+    that names neither the column nor the resolution -- and whether it fires
+    at all depends on the pandas version, so the same code can work on one
+    machine and fail on another. This pins the normalisation.
+    """
+    dates = pd.date_range("2026-01-01", periods=200, freq="B")
+    panel = pd.DataFrame({
+        "date": dates.astype("datetime64[ms]"), "ticker": "0001.KL",
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+        "adj_close": 1.0, "volume": 5_000_000,
+    })
+    lists = pd.DataFrame({
+        "list_date": pd.to_datetime(["2020-01-01"]).astype("datetime64[us]"),
+        "ticker": ["0001.KL"],
+    })
+    out = add_shariah_flag(panel, lists, backfill=True)
+    assert out["shariah"].all()

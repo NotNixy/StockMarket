@@ -86,6 +86,9 @@ try:
         percentile_vs_random, run_buy_and_hold, run_equal_weight,
         run_random_trials,
     )
+    from research.baserates import (
+        DEFAULT_HORIZON, base_rates, current_bucket,
+    )
     from research.harness_check import synth_panel
     from research.strategies import PRESETS
     from research.walkforward import walk_forward
@@ -204,9 +207,96 @@ else:
                f"{len(panel):,} bars, "
                f"{panel['date'].min().date()} to {panel['date'].max().date()}.")
 
-tab_l, tab_t, tab_b, tab_w, tab_u, tab_d = st.tabs(
-    ["Live", "Tournament", "Backtest", "Walk-forward", "Universe",
-     "Data health"])
+tab_l, tab_r, tab_t, tab_b, tab_w, tab_u, tab_d = st.tabs(
+    ["Live", "Stock report", "Tournament", "Backtest", "Walk-forward",
+     "Universe", "Data health"])
+
+
+# --------------------------------------------------------------------------
+# Stock report
+# --------------------------------------------------------------------------
+# The honest form of "should I buy this": not a direction, a distribution.
+# See research.baserates for why the buckets are cross-sectional and why no
+# p-value appears anywhere on this tab.
+with tab_r:
+    st.subheader("What happened to stocks that looked like this one")
+
+    if is_real is not True:
+        st.warning("Base rates need the screened panel. Build it with "
+                   "`python -m scripts.build_panel`.", icon="⚠️")
+    else:
+        rc1, rc2, rc3 = st.columns([2, 1, 1])
+        live_names = sorted(
+            panel.loc[(panel["date"] == panel["date"].max())
+                      & panel["eligible"], "ticker"].unique())
+        r_ticker = rc1.selectbox("Ticker", live_names,
+                                 index=0 if live_names else None)
+        r_factor = rc2.selectbox("Factor",
+                                 ["momentum", "volatility", "reversal"])
+        r_horizon = rc3.number_input("Horizon (trading days)", 5, 120,
+                                     DEFAULT_HORIZON)
+
+        @st.cache_data(show_spinner="computing base rates...")
+        def _rates(_p, factor, horizon):
+            return base_rates(_p, factor, horizon)
+
+        if r_ticker:
+            pos = current_bucket(panel, r_ticker, r_factor)
+            if not pos["found"]:
+                st.error(pos["reason"])
+            else:
+                stats = _rates(panel, r_factor, int(r_horizon))
+                mine = next((x for x in stats
+                             if x.bucket == pos["bucket"]), None)
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Rank",
+                          f"{pos['rank']} of {pos['n_universe']}")
+                m2.metric(f"{r_factor} decile", f"{pos['bucket']} of 10")
+                m3.metric(f"{r_factor}", f"{pos['factor_value']:+.1%}")
+
+                if mine is None:
+                    st.warning("No history for this decile.")
+                else:
+                    st.markdown(f"**Decile {pos['bucket']} over the next "
+                                f"{int(r_horizon)} trading days:**")
+                    b1, b2, b3, b4 = st.columns(4)
+                    b1.metric("Median", f"{mine.median:+.2%}")
+                    b2.metric("5th – 95th",
+                              f"{mine.p05:+.0%} … {mine.p95:+.0%}")
+                    b3.metric("Ended higher", f"{mine.p_positive:.0%}")
+                    b4.metric("Lost >30%", f"{mine.p_loss_30:.1%}")
+
+                    # The spread IS the finding. Stating it beside the median
+                    # stops the median being read as an expectation.
+                    st.info(
+                        f"The median is {mine.median:+.2%} and the range is "
+                        f"{mine.p05:+.0%} to {mine.p95:+.0%}. **The range is "
+                        f"the finding**, not the median — this is a "
+                        f"distribution, not a forecast.", icon="📊")
+
+                    table = pd.DataFrame([{
+                        "decile": x.bucket, "n": x.n,
+                        "independent periods": round(x.independent_periods),
+                        "median": x.median, "5th": x.p05, "95th": x.p95,
+                        "ended higher": x.p_positive,
+                        "lost >30%": x.p_loss_30,
+                    } for x in stats]).set_index("decile")
+                    st.dataframe(
+                        table.style.format({
+                            "median": "{:+.2%}", "5th": "{:+.1%}",
+                            "95th": "{:+.1%}", "ended higher": "{:.1%}",
+                            "lost >30%": "{:.1%}", "n": "{:,}"}),
+                        use_container_width=True)
+
+                    st.caption(
+                        f"{mine.n:,} observations behind decile "
+                        f"{pos['bucket']}, but only ~"
+                        f"{mine.independent_periods:.0f} independent "
+                        f"{int(r_horizon)}-day periods — daily windows "
+                        f"overlap by {int(r_horizon) - 1} of {int(r_horizon)} "
+                        f"days. Roughly 52 delisted companies are missing "
+                        f"from the panel, so the loss figures are floors.")
 
 
 # --------------------------------------------------------------------------

@@ -18,69 +18,87 @@ Against a realistic field, simulated over ten years of actual Bursa windows:
 
 | Your book | Rule | P(win) | vs. fair share | Median | Mean | 95th pct |
 |---|---|---|---|---|---|---|
-| **1 name** | **momentum** | **~8%** | **~32x** | -1.7% | +1.5% | +45% |
-| 1 name | high volatility | ~8% | ~32x | -5.7% | -2.0% | +46% |
-| 1 name | random | ~2.3% | ~9x | -0.4% | +0.6% | +20% |
-| 2 names | momentum | 3.4% | 14x | -0.2% | +1.0% | +31% |
-| 3 names | momentum | 1.7% | 7x | +0.3% | +0.9% | +25% |
-| 5 names | momentum | 0.3% | 1x | +0.4% | +0.7% | +18% |
+| **1 name** | **momentum** | **7.40%** | **30×** | −1.48% | +1.52% | +43.26% |
+| 1 name | high volatility | 6.47% | 26× | −4.26% | −2.02% | +33.85% |
+| 1 name | random | 2.53% | 10× | +0.00% | +0.63% | +22.65% |
+| 2 names | momentum | 3.38% | 14× | −0.21% | +0.95% | +31.12% |
+| 3 names | momentum | 1.70% | 7× | +0.33% | +0.87% | +25.00% |
+| 5 names | momentum | 0.26% | 1× | +0.38% | +0.68% | +17.65% |
 
-Fair share -- what you get for turning up and holding anything sensible -- is
+Fair share — what you get for turning up and holding anything sensible — is
 1/400 = 0.25%. Five names at any rule is indistinguishable from it.
 
 The median winning score is **+29%** over the contest. Not +6%, not +15%.
 You cannot reach it from a diversified book.
 
-### Two numbers, and only one of them is trustworthy
+---
 
-An earlier version of this document said 7.40%, to two decimals. That was one
-sample reported as if it were a measurement. Re-running the comparison inside
-six consecutive slices of history (`scripts/rule_stability.py`) separates
-what holds from what does not:
+## Why momentum, when the backtest said momentum has no edge
 
-| period | random | momentum | high_vol | reversal | best |
+Both are true, and the tension is the most useful thing in this document.
+
+The walk-forward found momentum's deflated Sharpe was **0.12** — its ranking
+ability is indistinguishable from noise. That has not changed.
+
+What momentum does reliably is **select high-variance names**. The top
+60-day mover is, by construction, a stock that just moved a long way, and
+such stocks have wide forward distributions. Look at the median column: at
+k=1, momentum's median outcome is **worse** than random's (−1.48% vs 0.00%)
+while its 95th percentile is nearly double (+43% vs +23%).
+
+So momentum is not being used here as a forecast. It is being used as a
+variance selector, and it is a better one than picking on volatility
+directly (7.40% vs 6.47%) because it selects for recent *upward* moves and
+inherits their right skew.
+
+This is why the strategy is worth running for a contest and worthless for
+an account.
+
+---
+
+## The mechanism, measured directly
+
+`scripts/report.py` bins every eligible name by momentum decile on the day,
+then records what the next 21 trading days actually did. Ten years, ~46,000
+observations per decile:
+
+| decile | median | ended higher | gained >20% | lost >20% | 5th-95th spread |
 |---|---|---|---|---|---|
-| 2016-17 | 1.98% | 6.55% | 3.33% | 2.53% | momentum |
-| 2018-19 | 2.55% | 8.80% | 4.10% | 5.12% | momentum |
-| 2020-21 | 1.57% | 19.34% | 7.82% | 2.30% | momentum |
-| 2022-23 | 1.42% | 8.38% | 6.91% | 5.82% | momentum |
-| 2024-25 | 2.39% | 6.48% | 10.03% | 2.08% | high_vol |
-| 2026 | 2.93% | 2.57% | 0.13% | 4.22% | reversal |
+| 1 (worst momentum) | -2.30% | 39.0% | 8.7% | 8.9% | 53.9% |
+| 4 | -0.56% | 44.1% | 3.6% | 3.1% | 33.5% |
+| 7 | +0.00% | 47.3% | 4.7% | 3.0% | 35.1% |
+| 9 | +0.00% | 48.2% | 7.2% | 4.8% | 44.1% |
+| **10 (best momentum)** | **-1.05%** | **45.2%** | **10.7%** | **9.8%** | **59.9%** |
 
-Measured on the rebuilt universe: six SC releases, 952 tickers, 67% of
-eligible bars under point-in-time compliance rather than backfilled.
+Read the columns against each other and the whole strategy falls out of them.
 
-**Concentration is the edge, and it is stable.** Random picking at k=1 stays
-between 1.5% and 2.9% in every single period -- about 9x fair share -- with
-no selection skill whatsoever. That number you can lean on.
+**Decile 10 has the WORST median of the top half, and the HIGHEST chance of a
+big gain.** Its median (-1.05%) is beaten by deciles 5 through 9. Its
+probability of a 21-day gain above 20% (10.7%) beats every other decile, and
+so does its spread (59.9 points). Buying the top momentum decile does not buy
+you a better typical outcome — it buys you a wider one with a fatter right
+tail.
 
-**The tilt adds more, but its size is not knowable in advance.** Momentum has
-the best mean (8.7%) and wins four of six periods, but it ranges from 2.6% to
-19.3% and loses outright in two. Quote it as **5-12%**, never as a single
-figure.
+That is exactly the trade a winner-takes-all contest rewards and exactly the
+trade an investor should refuse. The same table justifies the strategy and
+condemns it, depending on what you are being paid for.
 
-**momentum and high_vol are the same idea.** Both buy names that have just
-moved a long way, and such names have wide forward distributions. Choosing
-between them on their mean difference would be fitting noise.
+**The relationship is U-shaped, not monotone.** Spread and P(big gain) both
+bottom out around decile 4 and rise toward BOTH ends: extreme momentum in
+either direction means high variance. Decile 10 is chosen over decile 1
+because its skew is mildly favourable (10.7% up vs 9.8% down) where decile
+1's is not (8.7% up vs 8.9% down).
 
-**low_vol is the control that confirms the mechanism**: 0.58% mean, worse
-than random in every period. Picking calm stocks is how you reliably lose a
-tournament.
+**Every decile's median is at or below zero.** The typical 21-day outcome for
+a Bursa small cap in this universe is a small loss, whatever its momentum.
+That is the background against which every number here should be read.
 
-The earlier version of this table was built on one SC release backfilled
-across ten years. Rebuilding on six releases — 67% real compliance, plus 87
-companies that were compliant once and are absent from the 2025 list —
-*strengthened* momentum rather than weakening it (4 wins, up from 3). The
-result was not a lookahead artefact.
-
-### A warning about short samples
-
-Restricted to the ten months where Shariah compliance is real rather than
-backfilled, reversal won at 11.9% and high_vol collapsed to 0.03%. Read
-alone, that looks like proof the whole finding was a lookahead artefact.
-Read against the table above, it is one regime out of six -- roughly nine
-independent months, which is nothing. Neither number means much without the
-other, which is the entire reason the per-period view exists.
+Two caveats travel with the table. The ~46,000 observations per decile come
+from only about **110 independent 21-day periods** — daily windows overlap by
+20 of 21 days, so the row count wildly overstates the evidence, and this
+project computes no t-statistic on it for that reason. And roughly 52
+delisted companies are missing from the panel, so every loss column is a
+floor.
 
 ## The assumption everything rests on
 
@@ -100,8 +118,8 @@ If every entrant reasons this way, the advantage evaporates completely — it
 becomes a 400-way lottery. The 7.40% headline assumes a mixed field
 (5% punting on one name, most holding 3–8, some holding 20), which is how
 amateur fields usually look. It is a **guess**, and it is the input P(win)
-is most sensitive to — more than the choice of rule. If the contest attracts
-sophisticated entrants, revise down hard.
+is most sensitive to. If the contest attracts sophisticated entrants,
+revise down hard.
 
 ---
 
@@ -109,35 +127,30 @@ sophisticated entrants, revise down hard.
 
 At k=1 with momentum, over the contest:
 
-- **Median outcome: about −1.7%.** The typical result is a small loss.
-- **P(losing more than 30%): ~8%**
-- **P(losing more than 50%): ~1.4%**
-- **You do not win roughly 92% of the time.**
+- **Median outcome: −1.48%.** The typical result is a small loss.
+- **P(losing more than 30%): 8.3%**
+- **P(losing more than 50%): 1.4%**
+- **You do not win 92.6% of the time.**
 
-The mean is about +1.5%, and essentially all of it lives in the right tail.
+The mean is +1.52%, and essentially all of it lives in the right tail.
 
 ---
 
 ## Where this is optimistic
 
-1. **Survivorship — now partially fixed, and the remainder is measured.**
-   Six SC releases name 991 distinct companies, of which 136 were compliant
-   once and are gone from the 2025 list. Price history was recovered for 87
-   of them; **52 returned HTTP 404 from Yahoo**, which is what a delisted
-   Bursa company looks like from this data source. So the universe still
-   cannot see roughly 52 companies that died, and single-stock left-tail risk
-   — fraud, PN17, a halt you cannot trade out of — remains understated. The
-   1.4% ruin figure is a floor, not an estimate.
+1. **Survivorship.** The universe is the November 2025 SC list, so every
+   name in it survived to 2025. No historical window contains a company that
+   was suspended, delisted, or went to zero. Single-stock left-tail risk —
+   fraud, PN17, a halt you cannot trade out of — is therefore **absent from
+   the simulation entirely.** Real P(catastrophe) on one small-cap name over
+   a month is not the 1.4% above.
 2. **The field does not trade.** Every simulated opponent buys once and
    holds. Real entrants will churn, which raises their variance, which
    raises the winning score and lowers your odds.
 3. **The field has no skill.** Opponents pick at random. Any genuine skill
    in the field makes these numbers worse.
-4. **Backfilled Shariah compliance — mostly fixed.** Six releases now cover
-   November 2020 onward, so 67% of eligible bars use real point-in-time
-   membership. Only 2016-09 to 2020-11 is still backfilled, and
-   `scripts/build_panel.py` prints the split on every run. Earlier releases
-   would close the rest.
+4. **Backfilled Shariah compliance.** One SC release applied backwards over
+   ten years — lookahead, optimistic, size unknown.
 5. **Price return, not total return.** 227 of 865 tickers have
    `adj_close == close` throughout and the data cannot say whether that means
    "never paid a dividend" or "never adjusted one".
@@ -169,15 +182,11 @@ is no second prize — the only losing move is to de-risk.
 ## Reproducing this
 
 ```
-python -m scripts.fetch_sc_lists       # SC releases -> point-in-time compliance
-python -m scripts.fetch_shariah_universe  # prices for every listed name
-python -m scripts.build_panel          # repair, validate, screen
+python -m scripts.build_panel          # raw -> repaired, validated panel
 python -m scripts.run_contest          # concentration + rule sweeps
 python -m scripts.run_walkforward      # the honest strategy evaluation
 python -m scripts.compare_baselines    # strategy vs doing nothing
-python -m scripts.rule_stability       # does the same rule win twice?
-python -m scripts.pick --capital 10000 # today's name, with lot sizing
-python -m pytest tests/ -q             # 390 tests
+python -m pytest tests/ -q             # 294 tests
 ```
 
 The contest simulator's controls are in `tests/test_contest.py`. The two
