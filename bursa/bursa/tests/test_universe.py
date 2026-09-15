@@ -197,3 +197,32 @@ def test_screen_config_carries_the_backfill_flag(tmp_path):
     # The panel predates the release entirely.
     assert strict["eligible"].sum() == 0
     assert loose["eligible"].sum() > 0
+
+
+def test_leading_zeros_in_bursa_codes_survive_loading(tmp_path):
+    """ACE-market codes are 0xxx and LEAP are 03xxx. The zeros are significant.
+
+    Read without dtype=str, "0001" becomes the integer 1 and then "1.KL",
+    which matches nothing. The screen then reports the stock non-compliant
+    rather than raising, so the loss is invisible: 312 of 865 names vanished
+    from the Shariah universe this way.
+    """
+    p = tmp_path / "shariah.csv"
+    p.write_text("list_date,ticker\n2025-11-28,0001\n"
+                 "2025-11-28,03015\n2025-11-28,1155\n")
+    got = set(load_shariah_lists(p)["ticker"])
+    assert got == {"0001.KL", "03015.KL", "1155.KL"}
+
+
+def test_an_ace_market_stock_screens_as_compliant(tmp_path):
+    """The end-to-end version: the bug showed up here, not in the loader."""
+    p = tmp_path / "shariah.csv"
+    p.write_text("list_date,ticker\n2020-01-01,0001\n")
+    dates = pd.date_range("2021-01-04", periods=200, freq="B")
+    panel = pd.DataFrame({
+        "date": dates, "ticker": "0001.KL", "open": 1.0, "high": 1.0,
+        "low": 1.0, "close": 1.0, "adj_close": 1.0, "volume": 5_000_000,
+    })
+    s = screen(panel, ScreenConfig(), load_shariah_lists(p))
+    assert s["shariah"].all()
+    assert s["eligible"].any()

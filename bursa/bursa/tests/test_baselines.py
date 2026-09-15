@@ -6,6 +6,7 @@ import pytest
 from core.costs import SlippageModel
 from research.backtest import BacktestConfig, run_backtest
 from research.baselines import (
+    affordable_breadth,
     baseline_table, buy_and_hold_signal, make_random_signal,
     percentile_vs_random, run_buy_and_hold, run_equal_weight, run_random_trials,
 )
@@ -122,3 +123,39 @@ def test_baseline_table_includes_every_opponent():
     assert any("random entry" in i for i in table.index)
     assert len(randoms) == 10
     assert not np.isnan(table.loc["test strategy", "pctile_vs_random"])
+
+
+def test_breadth_is_capped_by_the_minimum_fee_not_the_share_price():
+    """On a small Bursa account the per-contract minimum is what binds.
+
+    A RM 10,000 account cannot own 643 names: the fees to enter alone would
+    take a fifth of it, and monthly rebalancing wipes it out. A baseline has
+    to be something you could actually have done.
+    """
+    from core.costs import BANK_STD, MOOMOO
+    assert affordable_breadth(10_000, MOOMOO) < 643
+    # A pricier broker forces a narrower basket at the same capital.
+    assert affordable_breadth(10_000, BANK_STD) <= affordable_breadth(10_000, MOOMOO)
+    # More capital buys more breadth, up to the hard cap.
+    assert affordable_breadth(1_000_000, MOOMOO) >= affordable_breadth(10_000, MOOMOO)
+    assert affordable_breadth(1e12, MOOMOO) == 200
+    assert affordable_breadth(1.0, MOOMOO) == 1
+
+
+def test_buy_and_hold_survives_a_wide_universe_on_a_small_account():
+    """The regression: this used to ruin the account and then raise."""
+    n = 300
+    dates = pd.date_range("2023-01-02", periods=300, freq="B")
+    panel = pd.concat([
+        pd.DataFrame({"date": dates, "ticker": f"T{i:03d}.KL",
+                      "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                      "adj_close": 1.0, "volume": 1_000_000, "eligible": True})
+        for i in range(n)], ignore_index=True)
+
+    bh = run_buy_and_hold(panel, BacktestConfig(capital=10_000.0))
+    ew = run_equal_weight(panel, BacktestConfig(capital=10_000.0))
+    assert not bh.ruined
+    assert not ew.ruined
+    # Both must hold the SAME number of names, or the comparison between them
+    # measures breadth rather than the rebalance schedule.
+    assert bh.config.max_positions == ew.config.max_positions

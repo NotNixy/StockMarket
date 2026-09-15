@@ -182,3 +182,32 @@ def test_a_too_short_holdout_is_rejected():
     p = panel()
     with pytest.raises(ValueError, match="too short"):
         evaluate_holdout(p, Strat, CFG, p["date"].max(), verbose=False)
+
+
+def test_survival_ratio_is_withheld_when_there_was_no_edge_to_survive():
+    """A ratio needs a real denominator.
+
+    The Shariah universe produced mean IS +0.098 and mean OOS +0.680, which
+    divides to 6.97 and reads like a triumph. It is division by almost zero:
+    the training window found nothing, so nothing survived. Reporting the
+    number would be the single most misleading line in the output.
+    """
+    r = WalkForwardResult(folds=[], oos_returns=pd.Series(dtype=float))
+    r.folds = [Fold(index=1, train_start=pd.Timestamp("2020-01-01"),
+                    train_end=pd.Timestamp("2021-01-01"),
+                    test_start=pd.Timestamp("2021-01-01"),
+                    test_end=pd.Timestamp("2021-07-01"),
+                    is_sharpe=0.098, oos_sharpe=0.680)]
+    assert np.isnan(r.degradation)
+    assert "n/a" in r.summary()
+
+
+def test_survival_ratio_is_reported_when_the_denominator_is_real():
+    r = WalkForwardResult(folds=[], oos_returns=pd.Series(dtype=float))
+    r.folds = [Fold(index=1, train_start=pd.Timestamp("2020-01-01"),
+                    train_end=pd.Timestamp("2021-01-01"),
+                    test_start=pd.Timestamp("2021-01-01"),
+                    test_end=pd.Timestamp("2021-07-01"),
+                    is_sharpe=1.20, oos_sharpe=0.60)]
+    assert r.degradation == pytest.approx(0.5)
+    assert "n/a" not in r.summary()

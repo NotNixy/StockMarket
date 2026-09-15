@@ -22,9 +22,12 @@ beats proves nothing.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
+from core.costs import Broker
 from research.backtest import BacktestConfig, BacktestResult, run_backtest
 from research.metrics import Performance, summarise
 
@@ -67,23 +70,58 @@ def make_random_signal(n_names: int, seed: int = 0):
     return _signal
 
 
+# A baseline must be something you could actually have done. "Own all 643
+# eligible names" is not: at a per-trade minimum fee, entering 643 positions
+# on RM 10,000 costs a fifth of the account before a single price moves, and
+# rebalancing monthly wipes it out inside two turns. Cap the breadth so that
+# ENTERING the basket costs at most this fraction of capital.
+MAX_ENTRY_COST_FRACTION = 0.01
+
+
+def affordable_breadth(capital: float, broker: Broker,
+                       hard_cap: int = 200) -> int:
+    """How many names this capital can hold without fees dominating.
+
+    Returns at least 1. The binding constraint on a small Bursa account is
+    not the share price -- it is the minimum brokerage charged per contract,
+    which does not shrink as the position does.
+    """
+    per_name = max(broker.min_fee, 0.01)
+    n = int((capital * MAX_ENTRY_COST_FRACTION) / per_name)
+    return max(1, min(n, hard_cap))
+
+
 def run_buy_and_hold(panel: pd.DataFrame,
-                     cfg: BacktestConfig | None = None) -> BacktestResult:
-    """Own everything, rebalance once a year. As close to free as it gets."""
+                     cfg: BacktestConfig | None = None,
+                     max_names: int | None = None) -> BacktestResult:
+    """Own a broad equal-weight basket, rebalance once a year.
+
+    As close to free as it gets, and still capped at what the capital can
+    actually carry -- see `affordable_breadth`.
+    """
     base = cfg or BacktestConfig()
+    n = max_names or affordable_breadth(base.capital, base.broker)
     bh = BacktestConfig(capital=base.capital, rebalance="YE",
                         broker=base.broker, slippage=base.slippage,
-                        max_positions=10_000, price_col=base.price_col)
+                        max_positions=n, price_col=base.price_col)
     return run_backtest(panel, buy_and_hold_signal, bh)
 
 
 def run_equal_weight(panel: pd.DataFrame,
-                     cfg: BacktestConfig | None = None) -> BacktestResult:
-    """Own everything, rebalanced on the strategy's own schedule."""
+                     cfg: BacktestConfig | None = None,
+                     max_names: int | None = None) -> BacktestResult:
+    """The same basket, rebalanced on the strategy's own schedule.
+
+    The gap between this and buy & hold is what the rebalance rhythm costs or
+    earns; the gap between this and the strategy is what the RANKING adds.
+    Both comparisons are meaningless if the two runs hold different numbers
+    of names, so the breadth cap is shared.
+    """
     base = cfg or BacktestConfig()
+    n = max_names or affordable_breadth(base.capital, base.broker)
     ew = BacktestConfig(capital=base.capital, rebalance=base.rebalance,
                         broker=base.broker, slippage=base.slippage,
-                        max_positions=10_000, price_col=base.price_col)
+                        max_positions=n, price_col=base.price_col)
     return run_backtest(panel, equal_weight_signal, ew)
 
 
@@ -91,11 +129,19 @@ def run_random_trials(panel: pd.DataFrame,
                       n_names: int,
                       cfg: BacktestConfig | None = None,
                       n_trials: int = 200,
-                      seed: int = 0) -> pd.DataFrame:
+                      seed: int = 0,
+                      measure_from: pd.Timestamp | None = None) -> pd.DataFrame:
     """Run `n_trials` random-entry backtests at matched exposure.
 
     Returns one row per trial. The distribution is the point: a strategy's
     Sharpe means something only relative to this spread.
+
+    `measure_from` restricts the SCORING window without restricting the run,
+    so the comparison is against the same dates the strategy was measured on.
+    Without it the random trials would be scored over all history while the
+    strategy is scored over its out-of-sample period, and the two Sharpes
+    would not be comparable -- which is exactly the kind of quiet mismatch
+    that makes a strategy look better than it is.
     """
     base = cfg or BacktestConfig()
     rows = []
@@ -104,6 +150,9 @@ def run_random_trials(panel: pd.DataFrame,
                            broker=base.broker, slippage=base.slippage,
                            max_positions=n_names, price_col=base.price_col)
         res = run_backtest(panel, make_random_signal(n_names, seed=seed + i), c)
+        if measure_from is not None:
+            r = res.returns[res.returns.index >= pd.Timestamp(measure_from)]
+            res = replace(res, returns=r)
         p = res.performance(name=f"random_{i}")
         rows.append({"trial": i, "total_return": p.total_return,
                      "cagr": p.cagr, "sharpe": p.sharpe,

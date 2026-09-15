@@ -31,23 +31,84 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core.costs import MOOMOO, SlippageModel, round_trip_pct
-from core.validate import validate
-from research.backtest import BacktestConfig, run_backtest
-from research.baselines import (
-    percentile_vs_random, run_buy_and_hold, run_equal_weight, run_random_trials,
-)
-from research.harness_check import synth_panel
-from research.strategies import PRESETS
-from research.walkforward import walk_forward
-from tournament.charts import (
-    DARK, LIGHT, equity_chart, gap_chart, pwin_chart,
-    random_distribution_chart, universe_chart, walkforward_chart,
-)
-from tournament.standing import Contest, assess, strategy_table
-
 st.set_page_config(page_title="Bursa", layout="wide",
                    initial_sidebar_state="expanded")
+
+
+# --------------------------------------------------------------------------
+# Imports, guarded
+# --------------------------------------------------------------------------
+# Streamlit Community Cloud REDACTS the message of any uncaught exception:
+#
+#   ImportError: This app has encountered an error. The original error message
+#   is redacted to prevent data leaks.
+#
+# For an ImportError the message is the entire diagnosis -- "cannot import
+# name X from Y" versus "No module named matplotlib" are different problems
+# with different fixes, and the redacted version distinguishes them not at
+# all. A whole debugging session went into an error that says nothing.
+#
+# Catching it here and rendering our OWN string defeats the redaction: the
+# text below is authored by this file, not by the exception handler, so
+# Streamlit passes it through. Everything shown is repository structure and
+# package versions -- no data, which is what the redaction exists to protect.
+def _fail(title: str, exc: Exception) -> None:
+    st.error(f"**{title}**\n\n`{type(exc).__name__}: {exc}`")
+    st.markdown(
+        "Most likely causes, in the order worth checking:\n\n"
+        "1. **The deployed build is stale.** If this repo looks correct on "
+        "GitHub, the running container is on an older commit. Manage app "
+        "-> Reboot. This is the usual one.\n"
+        "2. **A package is missing.** `requirements.txt` must sit in the "
+        "repo root or beside this file; Cloud reads nowhere else.\n"
+        "3. **A name genuinely moved** between modules.")
+
+    with st.expander("Diagnostics"):
+        st.write("**Repo root on sys.path:**", str(_ROOT))
+        st.write("**Root contents:**",
+                 sorted(p.name for p in _ROOT.iterdir()) if _ROOT.exists()
+                 else "MISSING")
+        pkg = _ROOT / "tournament"
+        st.write("**tournament/ contents:**",
+                 sorted(p.name for p in pkg.iterdir()) if pkg.exists()
+                 else "MISSING")
+        # What the module ACTUALLY exports, which is the answer whenever the
+        # error is "cannot import name".
+        try:
+            import tournament.charts as _c
+            st.write("**tournament.charts exports:**",
+                     sorted(n for n in dir(_c) if not n.startswith("_")))
+            st.write("**loaded from:**", getattr(_c, "__file__", "?"))
+        except Exception as e:            # noqa: BLE001 - diagnostic path
+            st.write("**tournament.charts failed to import:**",
+                     f"{type(e).__name__}: {e}")
+        for mod in ("matplotlib", "scipy", "pandas", "numpy", "pyarrow"):
+            try:
+                st.write(f"**{mod}:**", __import__(mod).__version__)
+            except Exception as e:        # noqa: BLE001 - diagnostic path
+                st.write(f"**{mod}:**", f"NOT AVAILABLE ({type(e).__name__})")
+        st.write("**sys.path:**", sys.path)
+    st.stop()
+
+
+try:
+    from core.costs import MOOMOO, SlippageModel, round_trip_pct
+    from core.validate import validate
+    from research.backtest import BacktestConfig, run_backtest
+    from research.baselines import (
+        percentile_vs_random, run_buy_and_hold, run_equal_weight,
+        run_random_trials,
+    )
+    from research.harness_check import synth_panel
+    from research.strategies import PRESETS
+    from research.walkforward import walk_forward
+    from tournament.charts import (
+        DARK, LIGHT, equity_chart, gap_chart, pwin_chart,
+        random_distribution_chart, universe_chart, walkforward_chart,
+    )
+    from tournament.standing import Contest, assess, strategy_table
+except ImportError as exc:
+    _fail("The app could not import its own modules.", exc)
 
 DATA_DIR = Path("data/raw")
 

@@ -54,6 +54,14 @@ class BacktestResult:
     avg_turnover: float
     n_rebalances: int
     config: BacktestConfig
+    # Set when costs consumed the account. A run that ended this way is not a
+    # strategy result; it is a statement that the configuration is untradable
+    # at this capital.
+    ruined_on: pd.Timestamp | None = None
+
+    @property
+    def ruined(self) -> bool:
+        return self.ruined_on is not None
 
     def performance(self, name: str = "strategy", n_trials: int = 1) -> Performance:
         return summarise(self.returns, name=name,
@@ -127,6 +135,7 @@ def run_backtest(panel: pd.DataFrame,
     port_ret = pd.Series(0.0, index=dates)
     total_costs = 0.0
     turnovers = []
+    ruined_on: pd.Timestamp | None = None
 
     # Map each rebalance date to the NEXT trading day -- the execution bar.
     next_day = {d: dates[i + 1] for i, d in enumerate(dates[:-1])}
@@ -149,6 +158,17 @@ def run_backtest(panel: pd.DataFrame,
         turnover = sum(abs(target.get(t, 0.0) - held.get(t, 0.0)) for t in names)
         turnovers.append(turnover)
 
+        # Ruin check, before costs are computed rather than after. An account
+        # that has been traded to nothing produces a negative notional, which
+        # used to surface as "contract value must be non-negative" from deep
+        # inside the fee model -- a confusing error for a real and important
+        # outcome. It happens easily: equal-weighting 643 names on RM 10,000
+        # is 643 minimum brokerage fees per rebalance, about RM 5,000 a turn.
+        # That is not a bug in the cost model, it is the cost model working.
+        if equity <= 0:
+            ruined_on = exec_date
+            break
+
         cost = 0.0
         for t in names:
             delta = abs(target.get(t, 0.0) - held.get(t, 0.0))
@@ -161,9 +181,19 @@ def run_backtest(panel: pd.DataFrame,
                                "to_w": target.get(t, 0.0),
                                "notional": notional, "cost": c})
         total_costs += cost
-        if equity > 0:
-            port_ret[exec_date] -= cost / equity      # charged on the fill bar
-            equity -= cost
+        if cost >= equity:
+            # The trade costs more than the account holds. Charge exactly the
+            # account -- never more. Without this the bar takes a return below
+            # -100% and the equity curve goes negative, which reported the
+            # equal-weight baseline as -103.12%: a loss larger than the money
+            # at stake, which is not a thing that can happen.
+            total_costs += equity - cost          # correct the overcharge
+            port_ret[exec_date] = -1.0
+            equity = 0.0
+            ruined_on = exec_date
+            break
+        port_ret[exec_date] -= cost / equity      # charged on the fill bar
+        equity -= cost
 
         held = target
         rows_w.append({"date": exec_date, **target})
@@ -182,6 +212,17 @@ def run_backtest(panel: pd.DataFrame,
     port_ret.iloc[0] = 0.0
 
     eq = cfg.capital * (1.0 + port_ret).cumprod()
+    if ruined_on is not None:
+        # Everything after ruin is flat, not continued trading. Leaving the
+        # return series running would let a wiped-out account keep "earning"
+        # the market return and quietly report a positive result.
+        port_ret.loc[port_ret.index >= ruined_on] = 0.0
+        eq = cfg.capital * (1.0 + port_ret).cumprod()
+        eq.loc[eq.index >= ruined_on] = 0.0
+        if verbose:
+            print(f"  RUINED on {ruined_on.date()}: costs consumed the "
+                  f"account. Stopped.")
+
     return BacktestResult(
         returns=port_ret,
         weights=held_daily,
@@ -191,4 +232,5 @@ def run_backtest(panel: pd.DataFrame,
         avg_turnover=float(np.mean(turnovers)) if turnovers else 0.0,
         n_rebalances=len(rebal),
         config=cfg,
+        ruined_on=ruined_on,
     )

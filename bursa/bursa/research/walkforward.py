@@ -75,10 +75,21 @@ class WalkForwardResult:
         v = [f.oos_sharpe for f in self.folds if np.isfinite(f.oos_sharpe)]
         return float(np.mean(v)) if v else np.nan
 
+    # Below this, the in-sample Sharpe is indistinguishable from zero and the
+    # ratio below it means nothing. Measured: the Shariah universe produced a
+    # mean IS Sharpe of 0.098 and an OOS of 0.680, giving a "survival ratio"
+    # of 6.97 -- which reads as a spectacular result and is pure division by
+    # almost-zero. There was no in-sample edge to survive.
+    MIN_MEANINGFUL_IS = 0.20
+
     @property
     def degradation(self) -> float:
-        """How much of the in-sample edge survived. 1.0 = all of it, 0 = none."""
-        if not np.isfinite(self.mean_is) or self.mean_is <= 0:
+        """How much of the in-sample edge survived. 1.0 = all of it, 0 = none.
+
+        NaN when there was no in-sample edge to begin with. A ratio is only
+        interpretable if its denominator is real.
+        """
+        if not np.isfinite(self.mean_is) or self.mean_is < self.MIN_MEANINGFUL_IS:
             return np.nan
         return float(self.mean_oos / self.mean_is)
 
@@ -99,8 +110,19 @@ class WalkForwardResult:
             "",
             f"  mean IS Sharpe   {self.mean_is:+.3f}",
             f"  mean OOS Sharpe  {self.mean_oos:+.3f}",
-            f"  survival ratio   {self.degradation:+.2f}   "
-            f"(OOS / IS -- below ~0.5 means most of the edge was fitted)",
+        ]
+        if np.isfinite(self.degradation):
+            lines.append(f"  survival ratio   {self.degradation:+.2f}   "
+                         f"(OOS / IS -- below ~0.5 means most was fitted)")
+        else:
+            lines.append(f"  survival ratio   n/a  -- mean IS Sharpe "
+                         f"{self.mean_is:+.3f} is too close to zero for the")
+            lines.append(f"                   ratio to mean anything. There "
+                         f"was no in-sample edge to survive;")
+            lines.append(f"                   any OOS result here is a "
+                         f"statement about the test period,")
+            lines.append(f"                   not about the strategy.")
+        lines += [
             f"  stitched OOS     SR {self.stitched_sharpe:+.3f}  "
             f"ret {total_return(self.oos_returns):+.2%}  "
             f"maxDD {max_drawdown(self.oos_returns):.2%}",

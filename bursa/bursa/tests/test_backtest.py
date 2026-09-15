@@ -12,6 +12,7 @@ from core.costs import BANK_STD, MOOMOO, SlippageModel
 from research.backtest import (
     BacktestConfig, _normalise_weights, _rebalance_dates, run_backtest,
 )
+from research.metrics import total_return
 
 NO_SLIP = SlippageModel(0.0, 0.0)
 
@@ -211,3 +212,73 @@ def test_first_date_is_always_a_rebalance_point():
     dates = pd.DatetimeIndex(pd.date_range("2024-01-10", periods=400, freq="B"))
     for rule in ("ME", "YE", "W-FRI", "QE"):
         assert _rebalance_dates(dates, rule)[0] == dates[0]
+
+
+def test_an_account_traded_to_nothing_reports_ruin_instead_of_raising():
+    """643 names x a minimum brokerage fee is ~RM 5,000 a rebalance.
+
+    On RM 10,000 the account is gone in two turns. That used to surface as
+    "contract value must be non-negative" from inside the fee model, which
+    reads as a bug in the arithmetic rather than as the arithmetic working.
+    """
+    n = 400
+    dates = pd.date_range("2023-01-02", periods=260, freq="B")
+    rows = []
+    for i in range(n):
+        # Half the universe drops out each fortnight, so every rebalance is a
+        # full turnover of 400 names. That is the real panel's behaviour: the
+        # eligible set churns as liquidity and price screens bite.
+        half = (np.arange(len(dates)) // 10) % 2 == (i % 2)
+        rows.append(pd.DataFrame({
+            "date": dates, "ticker": f"T{i:03d}.KL",
+            "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+            "adj_close": 1.0, "volume": 1_000_000, "eligible": half,
+        }))
+    panel = pd.concat(rows, ignore_index=True)
+
+    cfg = BacktestConfig(capital=10_000.0, rebalance="W-FRI",
+                         max_positions=10_000)
+    res = run_backtest(panel, lambda h, d, e: {t: 1.0 for t in e}, cfg)
+
+    assert res.ruined, "costs exceeded capital; this must be reported"
+    assert res.ruined_on is not None
+    # Nothing accrues after ruin -- a wiped-out account must not keep earning.
+    assert (res.returns[res.returns.index >= res.ruined_on] == 0).all()
+    assert (res.equity[res.equity.index >= res.ruined_on] == 0).all()
+
+
+def test_a_normal_run_is_not_marked_ruined():
+    p = make_panel()
+    res = run_backtest(p, lambda h, d, e: {t: 1.0 for t in e[:3]},
+                       BacktestConfig(capital=100_000.0))
+    assert not res.ruined
+    assert res.ruined_on is None
+
+
+def test_you_cannot_lose_more_than_the_account_holds():
+    """A cost larger than the remaining equity must charge exactly the equity.
+
+    The equal-weight baseline on the real panel reported -103.12%. Losing
+    103% of your money is not a thing that can happen; it meant one bar took
+    a return below -100% and the equity curve crossed zero.
+    """
+    n = 400
+    dates = pd.date_range("2023-01-02", periods=260, freq="B")
+    rows = []
+    for i in range(n):
+        half = (np.arange(len(dates)) // 10) % 2 == (i % 2)
+        rows.append(pd.DataFrame({
+            "date": dates, "ticker": f"T{i:03d}.KL",
+            "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+            "adj_close": 1.0, "volume": 1_000_000, "eligible": half,
+        }))
+    panel = pd.concat(rows, ignore_index=True)
+
+    cfg = BacktestConfig(capital=10_000.0, rebalance="W-FRI",
+                         max_positions=10_000)
+    res = run_backtest(panel, lambda h, d, e: {t: 1.0 for t in e}, cfg)
+
+    assert res.ruined
+    assert res.returns.min() >= -1.0, "a bar lost more than everything"
+    assert (res.equity >= 0).all(), "equity went negative"
+    assert total_return(res.returns) >= -1.0

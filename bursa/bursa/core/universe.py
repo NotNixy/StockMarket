@@ -73,7 +73,13 @@ def load_shariah_lists(path: str | Path) -> pd.DataFrame:
     Each release is a complete snapshot, not a diff. A ticker absent from a
     release was not compliant at that revision.
     """
-    df = pd.read_csv(path)
+    # dtype=str is load-bearing, not tidiness. Bursa codes are strings with
+    # significant leading zeros: ACE-market names are 0xxx and LEAP are 03xxx.
+    # Letting pandas infer reads "0001" as the integer 1, which becomes
+    # "1.KL", which matches no ticker in the panel. That silently dropped 312
+    # of 865 names -- every ACE and LEAP stock -- from the compliant set, with
+    # no error anywhere: the screen simply reported them non-compliant.
+    df = pd.read_csv(path, dtype={"ticker": str})
     missing = {"list_date", "ticker"} - set(df.columns)
     if missing:
         raise ValueError(f"{path}: missing column(s) {sorted(missing)}")

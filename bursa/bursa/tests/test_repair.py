@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from core.repair import (
+    locate_recorded_splits,
     KNOWN_RATIOS, RepairReport, apply_split_adjustment, detect_splits,
     find_bad_bars, find_unadjusted_tickers, repair,
 )
@@ -145,10 +146,13 @@ def test_repair_handles_all_three_faults_at_once():
                       verbose=False)
 
     assert len(rep.splits_fixed) == 1
-    assert "UNADJ.KL" in rep.quarantined
+    # Noted, but NOT dropped. The check cannot tell "dividends never
+    # adjusted" from "never paid one", so it reports instead of deciding.
+    assert "UNADJ.KL" in rep.unadjusted_noted
+    assert "UNADJ.KL" not in rep.quarantined
+    assert "UNADJ.KL" in set(out["ticker"])
     assert len(rep.bars_dropped) == 1
-    assert "UNADJ.KL" not in set(out["ticker"])
-    assert len(out) == len(split) + len(broken) - 1
+    assert len(out) == len(split) + len(unadj) + len(broken) - 1
 
 
 def test_repair_can_be_told_to_do_nothing():
@@ -228,3 +232,195 @@ def test_the_real_vitrox_case_still_passes_all_three_gates():
     row = d.iloc[0]
     assert bool(row["ratio_ok"]) and bool(row["volume_ok"]) \
         and bool(row["stable_after"]) and bool(row["is_split"])
+
+
+# ------------------------------------------------- penny stocks and the record
+# These cover the regression found by running the detector over all 865
+# Shariah-compliant tickers instead of a 58-name large-cap sample. It reported
+# 1,104 splits. Ticker 0034 alone showed ~30 alternating +50% / -33.3% steps
+# inside five months -- a stock at RM 0.02 moving one half-sen tick.
+def penny_oscillation(n=300, low=0.02, high=0.03):
+    """A two-sen stock ticking between two adjacent prices.
+
+    Every up move is +50% (ratio 1.5, a KNOWN_RATIO) and every down move is
+    -33.3% (also ratio 1.5). Volume is flat, so no spike. It ticks back, so
+    there is no drift. It passes all three of the original gates.
+    """
+    dates = pd.date_range("2023-01-02", periods=n, freq="B")
+    px = np.where(np.arange(n) % 2 == 0, low, high).astype(float)
+    return pd.DataFrame({
+        "date": dates, "ticker": "PENNY.KL",
+        "open": px, "high": px, "low": px, "close": px,
+        "adj_close": px * 0.99, "volume": 50_000,
+    })
+
+
+def test_penny_tick_oscillation_is_not_a_split():
+    """The regression itself. Without the price floor this returns hundreds."""
+    d = detect_splits(penny_oscillation())
+    assert len(d) > 100, "fixture should trip the ratio and volume gates"
+    assert not d["is_split"].any(), (
+        f"{int(d['is_split'].sum())} tick moves called splits")
+
+
+def test_penny_moves_fail_specifically_on_price_not_by_accident():
+    """Guard the reason, not just the outcome.
+
+    If a later change makes these fail some other gate, the price floor could
+    be removed without any test noticing.
+    """
+    d = detect_splits(penny_oscillation())
+    assert d["ratio_ok"].any(), "a half-sen tick IS a clean 1.5 ratio"
+    assert not d["price_ok"].any()
+
+
+def test_a_real_split_still_passes_the_price_floor():
+    d = detect_splits(with_unadjusted_split(ratio=2.0))   # RM 10 stock
+    assert bool(d["price_ok"].iloc[0])
+    assert bool(d["is_split"].iloc[0])
+
+
+def recorded(ticker="AAA.KL", date="2023-08-01", value=2.0):
+    return pd.DataFrame({"date": [pd.Timestamp(date)],
+                         "ticker": [ticker], "value": [value]})
+
+
+def test_a_split_on_record_is_repaired():
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    step = p["date"].iloc[150]
+    d = detect_splits(p, recorded(date=step))
+    assert bool(d["confirmed"].iloc[0])
+    assert bool(d["is_split"].iloc[0])
+
+
+def test_a_price_step_with_no_action_on_record_is_left_alone():
+    """The whole point of fetching the event list.
+
+    The pattern is a textbook 2-for-1. Nobody recorded a split. It stays."""
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    other = recorded(ticker="ZZZ.KL")           # a record, but not for AAA
+    d = detect_splits(p, other)
+    assert not bool(d["confirmed"].iloc[0])
+    assert not bool(d["is_split"].iloc[0])
+
+
+def test_confirmation_tolerates_yahoos_date_being_weeks_off():
+    """VITROX: Yahoo dated the split 2024-06-10, the price stepped 2024-05-02."""
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    step = p["date"].iloc[150]
+    late = recorded(date=step + pd.Timedelta(days=35))
+    assert bool(detect_splits(p, late)["is_split"].iloc[0])
+
+
+def test_confirmation_rejects_an_action_from_a_different_quarter():
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    step = p["date"].iloc[150]
+    far = recorded(date=step + pd.Timedelta(days=200))
+    assert not bool(detect_splits(p, far)["is_split"].iloc[0])
+
+
+def test_direction_must_match_the_recorded_action():
+    """A 2-for-1 split halves the price. It cannot explain a doubling.
+
+    Matching on ratio magnitude alone would accept this, and back-adjust the
+    wrong way -- turning one bad bar into a whole rewritten history.
+    """
+    p = panel()
+    p.loc[p.index >= 150, ["open", "high", "low", "close", "adj_close"]] *= 2.0
+    step = p["date"].iloc[150]
+    d = detect_splits(p, recorded(date=step, value=2.0))   # forward split
+    assert not bool(d["confirmed"].iloc[0])
+
+
+def test_a_consolidation_is_confirmed_by_its_own_direction():
+    """Yahoo writes a 1-for-5 reverse split as value 0.2; the price rises 5x."""
+    p = panel()
+    p.loc[p.index >= 150, ["open", "high", "low", "close", "adj_close"]] *= 5.0
+    step = p["date"].iloc[150]
+    d = detect_splits(p, recorded(date=step, value=0.2))
+    assert bool(d["confirmed"].iloc[0])
+    assert bool(d["is_split"].iloc[0])
+
+
+def test_repair_passes_the_record_through():
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    step = p["date"].iloc[150]
+    _, with_rec = repair(p, recorded(date=step), verbose=False)
+    _, no_rec = repair(p, pd.DataFrame(columns=["date", "ticker", "value"]),
+                       verbose=False)
+    assert len(with_rec.splits_fixed) == 1
+    # An EMPTY record is treated as "no record available", so the heuristic
+    # still runs. An empty file must not silently disable every repair.
+    assert len(no_rec.splits_fixed) == 1
+
+
+def test_quarantine_is_opt_in_and_still_works_when_asked():
+    unadj = panel(ticker="UNADJ.KL", adj_factor=1.0)
+    keep, _ = repair(unadj, verbose=False)
+    drop, rep = repair(unadj, quarantine_unadjusted=True, verbose=False)
+    assert "UNADJ.KL" in set(keep["ticker"])
+    assert "UNADJ.KL" not in set(drop["ticker"])
+    assert "UNADJ.KL" in rep.quarantined
+
+
+# ------------------------------------------------- record-driven split repair
+def test_a_recorded_split_already_applied_is_left_alone():
+    """The common case. 292 of 315 recorded actions were already in the data.
+
+    Repairing one twice would halve the history a second time.
+    """
+    p = panel()                                    # smooth, no step anywhere
+    step = p["date"].iloc[150]
+    loc = locate_recorded_splits(p, recorded(date=step, value=2.0))
+    assert len(loc) == 1
+    assert not bool(loc["needs_repair"].iloc[0])
+
+
+def test_a_recorded_split_that_was_missed_is_located_at_the_price_step():
+    p = with_unadjusted_split(at=150, ratio=2.0)
+    step = p["date"].iloc[150]
+    # Record it five weeks late, as Yahoo did for VITROX.
+    loc = locate_recorded_splits(p, recorded(date=step + pd.Timedelta(days=35)))
+    assert bool(loc["needs_repair"].iloc[0])
+    assert loc["date"].iloc[0] == step, "must land on the price step, not the record date"
+
+
+def test_record_driven_repair_catches_ratios_the_heuristic_cannot_see():
+    """A 1.2 bonus issue is a -16.7% step: under SPLIT_MIN_MOVE entirely.
+
+    detect_splits will never look at it. The record makes it repairable.
+    """
+    p = with_unadjusted_split(at=150, ratio=1.2)
+    step = p["date"].iloc[150]
+    assert detect_splits(p).empty, "fixture should be invisible to the heuristic"
+    loc = locate_recorded_splits(p, recorded(date=step, value=1.2))
+    assert bool(loc["needs_repair"].iloc[0])
+
+
+def test_a_trivial_bonus_issue_is_not_repaired():
+    """value 1.0142857 is a 1-for-70 bonus: a 1.4% step.
+
+    Too small to locate reliably and not worth rewriting history for.
+    """
+    p = panel()
+    step = p["date"].iloc[150]
+    loc = locate_recorded_splits(p, recorded(date=step, value=1.0142857))
+    assert not bool(loc["needs_repair"].iloc[0])
+
+
+def test_repair_prefers_the_record_over_the_pattern():
+    """With a record supplied, the heuristic must not rewrite anything.
+
+    A clean 2:1 pattern with no action on record stays put, and the ticker
+    that DOES have one on record gets fixed.
+    """
+    rec = with_unadjusted_split(at=150, ratio=2.0)                 # AAA.KL
+    ghost = with_unadjusted_split(at=150, ratio=2.0).assign(ticker="GHOST.KL")
+    step = rec["date"].iloc[150]
+    out, rep = repair(pd.concat([rec, ghost], ignore_index=True),
+                      known_splits=recorded(date=step), verbose=False)
+
+    assert set(rep.splits_fixed["ticker"]) == {"AAA.KL"}
+    # GHOST's step survives untouched -- it is reported, not rewritten.
+    g = out[out["ticker"] == "GHOST.KL"].sort_values("date")
+    assert g["close"].iloc[151] / g["close"].iloc[149] < 0.6
