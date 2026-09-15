@@ -24,3 +24,21 @@ __pycache__/
 venv/
 .venv/
 .pytest_cache/
+
+# ---- regenerable build artefacts ----
+# Each is ~20MB and rebuilt by `python -m scripts.build_panel` in minutes.
+# Committing them bloats the repo permanently for no benefit, and git
+# stores every version forever -- you cannot take it back later.
+data/clean_panel.parquet
+data/screened.parquet
+data/screened_nobackfill.parquet
+
+# Public SC regulatory PDFs, ~4MB, re-downloaded by scripts.fetch_sc_lists.
+# The PARSED result (data/shariah.csv) is committed -- that is the artefact
+# that matters and it is 76KB.
+data/sc_lists/
+
+# ---- the trading journal ----
+# Your own decision record. Keep it locally; it is not code, and pushing it
+# publishes what you traded and when.
+results/picks.csv
